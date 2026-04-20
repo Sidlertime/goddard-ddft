@@ -20,9 +20,10 @@ from functions import plot_movie
 
 parser = argparse.ArgumentParser(description='neural DDFT')
 parser.add_argument('--run_id', type=str, default='g1-closed')
-parser.add_argument('--md_path', type=str, default='../data/g1-closed-dz100/avg_5000')
+parser.add_argument('--md_path', type=str, default='../neural-ddft-pcm/data/g1-closed-dz100/avg_5000')
 parser.add_argument('--ref_md_path', type=str, default=None)
 parser.add_argument('--type', type=str, default='c2')
+parser.add_argument('--model', type=str, default=None)
 parser.add_argument('--k', type=float, default=1)
 parser.add_argument('--T', type=float, default=2)
 parser.add_argument('--m', type=float, default=1)
@@ -54,11 +55,23 @@ dz = r[1] - r[0]
 print(f'Number of particles: {np.sum(init_rho) * dz * 10 * 10} (dz: {dz})')
 
 # Load F model
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using compute device: {device}")
+
 if int(1/dz) == 100:
     model = NeuralFreeEnergyFine.load_from_checkpoint(checkpoint_path=f"../neural-ddft-pcm/ddft/models/{args.type}_dz100.ckpt", map_location=torch.device('cpu'))
+    
 else:
     model = NeuralFreeEnergy.load_from_checkpoint(checkpoint_path=f"../neural-ddft-pcm/ddft/models/{args.type}_dz{int(1/dz)}.ckpt", map_location=torch.device('cpu'))
-    
+
+if(args.model is not None):
+    # 2. Now, load your FINE-TUNED pure-PyTorch weights
+    finetuned_ckpt = f"../neural-ddft-pcm/ddft/models/{args.model}"
+    finetuned_data = torch.load(finetuned_ckpt, map_location=device)
+
+    # 3. Overwrite the base model's weights with the fine-tuned weights
+    model.load_state_dict(finetuned_data['state_dict'])
+
 model.eval()
 
 # Assuming you loaded init_rho, V, r, and the model as in your script
@@ -88,9 +101,21 @@ xv_ic_flat = solver.compute_equilibrium()
 
 # Assign your external potential to the solver grid
 # (Interpolating your uniform V to the Chebyshev grid)
-interp_V = interp1d(r, V, kind='cubic', fill_value="extrapolate")
-solver.Vext = interp_V(solver.y)
-solver.Vext_grad = solver.Dy.dot(solver.Vext) # Spectral derivative of potential!
+#interp_V = interp1d(r, V, kind='cubic', fill_value="extrapolate")
+#solver.Vext = interp_V(solver.y)
+#solver.Vext_grad = solver.Dy.dot(solver.Vext) # Spectral derivative of potential!
+A = 5.0      
+mu = 5.0     
+sigma = 2.0  
+L = solver.line.L # Box length (10)
+
+# Periodized Gaussian (Summing the main hill + immediate neighbors)
+solver.Vext = (
+    A * np.exp(-0.5 * ((solver.y - mu) / sigma)**2) +
+    A * np.exp(-0.5 * ((solver.y - mu + L) / sigma)**2) +
+    A * np.exp(-0.5 * ((solver.y - mu - L) / sigma)**2)
+)
+solver.Vext_grad = solver.Dy.dot(solver.Vext)
 
 # Since x = kBT * ln(rho) + Vext, and we just increased Vext, 
 # we must add the new Vext to our initial state vector 'x' 

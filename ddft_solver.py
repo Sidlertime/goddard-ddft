@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from scipy.integrate import solve_ivp
 from scipy.optimize import fsolve
+from scipy.interpolate import interp1d, CubicSpline
 from tqdm import tqdm
 
 from spectral_line import SpectralLine, PeriodicLine
@@ -175,8 +176,6 @@ class DDFT_Inertia_1D:
         return sol
 
 
-from scipy.interpolate import interp1d
-
 class DDFT_Inertia_1D_Neural(DDFT_Inertia_1D):
     def __init__(self, optsPhys, optsNum, nn_model, uniform_r):
         super().__init__(optsPhys, optsNum)
@@ -214,13 +213,18 @@ class DDFT_Inertia_1D_Neural(DDFT_Inertia_1D):
         rho_fourier = rho_cheb  # better naming
         y_padded = np.append(self.y, self.line.yMax)
         rho_padded = np.append(rho_fourier, rho_fourier[0])
+        #y_padded = np.concatenate((self.y[-3:] - self.line.L, self.y, self.y[:3] + self.line.L))
+        #rho_padded = np.concatenate((rho_fourier[-3:], rho_fourier, rho_fourier[:3]))
         
         # Now we can safely use cubic interpolation over the completely closed domain
-        interp_to_uniform = interp1d(
-            y_padded, rho_padded, kind='cubic', 
-            bounds_error=False, fill_value="extrapolate"
-        )
-        rho_uniform = interp_to_uniform(self.uniform_r)
+        #interp_to_uniform = interp1d(
+        #    y_padded, rho_padded, kind='cubic', 
+        #    bounds_error=False, fill_value="extrapolate"
+        #)
+        #rho_uniform = interp_to_uniform(self.uniform_r)
+        spline_to_uniform = CubicSpline(y_padded, rho_padded, bc_type='periodic')
+        rho_uniform = spline_to_uniform(self.uniform_r)
+        rho_uniform = np.maximum(rho_uniform, 1e-6)
         
         # 2. Evaluate PyTorch Neural Network
         rho_tensor = torch.tensor(rho_uniform).view(1, 1, -1).float().requires_grad_(True)
@@ -238,22 +242,26 @@ class DDFT_Inertia_1D_Neural(DDFT_Inertia_1D):
         
         #return dFdrho_uniform, dFdrho_cheb
 
-        # 3. Uniform -> Fourier (Padding the Uniform PyTorch grid)
+        # 3. Uniform -> Fourier (Tripple Padding the Uniform PyTorch grid)
         # ---------------------------------------------------------
         # MD uniform grids (cell centers) also leave gaps at the edges. 
         # We wrap the last point to the left, and the first point to the right!
         r_padded = np.concatenate(([self.uniform_r[-1] - self.line.L], self.uniform_r, [self.uniform_r[0] + self.line.L]))
         dFdrho_padded = np.concatenate(([dFdrho_uniform[-1]], dFdrho_uniform, [dFdrho_uniform[0]]))
+        #r_padded = np.concatenate((self.uniform_r[-3:] - self.line.L, self.uniform_r, self.uniform_r[:3] + self.line.L))
+        #dFdrho_padded = np.concatenate((dFdrho_uniform[-3:], dFdrho_uniform, dFdrho_uniform[:3]))
 
         # Fix duplication errors
         r_unique, unique_idx = np.unique(r_padded, return_index=True)
         dFdrho_unique = dFdrho_padded[unique_idx]
         
-        interp_to_fourier = interp1d(
-            r_unique, dFdrho_unique, kind='cubic', 
-            bounds_error=False, fill_value="extrapolate"
-        )
-        dFdrho_fourier = interp_to_fourier(self.y)
+        #interp_to_fourier = interp1d(
+        #    r_unique, dFdrho_unique, kind='cubic', 
+        #    bounds_error=False, fill_value="extrapolate"
+        #)
+        #dFdrho_fourier = interp_to_fourier(self.y)
+        spline_to_fourier = CubicSpline(r_unique, dFdrho_unique)
+        dFdrho_fourier = spline_to_fourier(self.y)
 
         return dFdrho_uniform, dFdrho_fourier
 
