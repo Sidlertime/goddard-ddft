@@ -1,6 +1,6 @@
 import numpy as np
-from spectral_utils import cheb_grid_diff, clencurt_weights
-from spectral_line import SpectralLine
+from goddard_psm.spectral_utils import cheb_grid_diff, clencurt_weights
+from goddard_psm.spectral_line import SpectralLine
 
 def test_differentiation_exactness():
     """Spectral methods should differentiate polynomials exactly."""

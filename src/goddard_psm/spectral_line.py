@@ -1,6 +1,5 @@
 import numpy as np
-from spectral_utils import cheb_grid_diff, clencurt_weights
-from spectral_utils import fourier_grid_diff
+from goddard_psm.spectral_utils import cheb_grid_diff, clencurt_weights, fourier_grid_diff
 
 class PeriodicLine:
     def __init__(self, yMin, yMax, N):

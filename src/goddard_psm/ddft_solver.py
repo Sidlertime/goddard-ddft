@@ -5,7 +5,7 @@ from scipy.optimize import fsolve
 from scipy.interpolate import interp1d, CubicSpline
 from tqdm import tqdm
 
-from spectral_line import SpectralLine, PeriodicLine
+from goddard_psm.spectral_line import SpectralLine, PeriodicLine
 
 class DDFT_Inertia_1D:
     def __init__(self, optsPhys, optsNum):

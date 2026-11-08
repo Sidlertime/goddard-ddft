@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from ddft_solver import DDFT_Inertia_1D
+from goddard_psm.ddft_solver import DDFT_Inertia_1D
 
 # Define physical parameters
 optsPhys = {
