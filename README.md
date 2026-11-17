@@ -20,9 +20,10 @@ If both solvers agree, the PhiFlow results are not artifacts of its discretizati
 
 ## Installation
 
-The three project repositories share one conda environment and are expected next to each
-other. The solver imports `neural_ddft` and loads the PCM checkpoints and MD data from
-`../neural-ddft-pcm`.
+**Platforms:** Linux, macOS and Windows (tested on Linux).
+
+The solver imports `neural_ddft` and loads the PCM checkpoints and MD data from
+`../neural-ddft-pcm`, so neural-ddft-pcm must be cloned next to this repository:
 
 ```
 workspace/
@@ -34,13 +35,23 @@ workspace/
 Clone this repository into a folder named `goddard`: the solver-comparison scripts of
 neural-ddft-pcm look for it there. You can also set the environment variable `GODDARD_ROOT`.
 
+Either create this repository's own environment (it installs both packages in editable
+mode):
+
+```bash
+cd goddard
+mamba env create -f environment.yml      # or: conda env create -f environment.yml
+mamba activate goddard-ddft
+```
+
+or reuse the `neural-ddft` environment of neural-ddft-pcm:
+
 ```bash
 cd neural-ddft-pcm
-mamba env create -f environment.yml      # or: conda env create -f environment.yml
+mamba env create -f environment.yml
 mamba activate neural-ddft
-pip install -e ddft                      # neural_ddft package
 cd ../goddard
-pip install -e .                         # goddard_psm package
+pip install -e .
 ```
 
 ### Tests

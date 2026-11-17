@@ -1,0 +1,25 @@
+# Environment for goddard-ddft. Linux, macOS and Windows.
+# The solver imports neural_ddft, so neural-ddft-pcm must be cloned next to this
+# repository (../neural-ddft-pcm) before creating the environment. Alternatively,
+# use the neural-ddft environment of neural-ddft-pcm and run `pip install -e .` here.
+name: goddard-ddft
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy>=2.0
+  - scipy
+  - matplotlib
+  - h5py
+  - pyyaml
+  - tqdm
+  - pytorch-cpu>=2.4
+  - pytorch-lightning      # loading the PCM free-energy checkpoints
+  - ffmpeg
+  - pytest
+  - pip
+  - pip:
+      - phiflow==3.4.0
+      - phiml==1.15.1          # phiml 1.16 breaks semi-Lagrangian advection (grid_sample)
+      - -e ../neural-ddft-pcm/ddft
+      - -e .
