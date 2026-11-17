@@ -47,15 +47,24 @@ class DDFT_Inertia_1D:
         # ===================================================================
         # NEURAL NETWORK INTEGRATION HERE
         # In MATLAB: mu_s  = getFex(rho_s) + x + ConvRho_s - mu + VAdd;
-        # You need to return: NN_Prediction(rho) + x 
+        # You need to return: NN_Prediction(rho) + x
         # ===================================================================
-        
+
         # Placeholder for NN: Assuming 0 excess free energy for now (ideal gas)
-        dFexc_drho = np.zeros_like(rho) 
-        
+        dFexc_drho = np.zeros_like(rho)
+
         # mu_total = F_exc_deriv + x
         mu_total = dFexc_drho + x
         return mu_total
+
+    def get_sup_force(self, rho, v, t=0.0):
+        """
+        Optional learned superadiabatic correction force, added additively
+        to the momentum equation (Equation 2 in dxv_dt) - the Goddard
+        analogue of neural-ddft-pcm's hybrid f_sup. Base class has none;
+        override in DDFT_Inertia_1D_Neural when a sup_model is provided.
+        """
+        return 0.0
 
     def equilibrium_residual(self, x0mu0_flat):
         """ Translates f(x) from the MATLAB fsolve step. """
@@ -115,9 +124,13 @@ class DDFT_Inertia_1D:
 
         # Viscous term: (eta / (m * rho)) * ∇²v
         visc_term = (self.eta / (self.m[None, :] * rho)) * self.D2y.dot(v)
-        
+
+        # Optional learned superadiabatic correction (base class: always 0)
+        f_sup = self.get_sup_force(rho, v, t)
+
         # Equation 2: Velocity evolution (Navier-Stokes-like / Inertial)
-        dvdt = -self.gamma[None, :] * v - v * self.Dy.dot(v) - self.mInv[None, :] * self.Dy.dot(mu_s) + visc_term
+        dvdt = (-self.gamma[None, :] * v - v * self.Dy.dot(v) - self.mInv[None, :] * self.Dy.dot(mu_s)
+                + visc_term + self.mInv[None, :] * f_sup)
         
         # Ensure boundary conditions (Dirichlet for walls)
         #dvdt[0, :] = 0.0
@@ -177,11 +190,25 @@ class DDFT_Inertia_1D:
 
 
 class DDFT_Inertia_1D_Neural(DDFT_Inertia_1D):
-    def __init__(self, optsPhys, optsNum, nn_model, uniform_r):
+    def __init__(self, optsPhys, optsNum, nn_model, uniform_r, sup_model=None):
         super().__init__(optsPhys, optsNum)
         self.nn_model = nn_model
-        self.uniform_r = uniform_r 
+        self.uniform_r = uniform_r
         self.dz = uniform_r[1] - uniform_r[0]
+        # Optional learned superadiabatic correction network (hybrid mode) -
+        # mirrors neural-ddft-pcm's force_factory.py:get_hybrid_force, see
+        # predict_f_sup/get_sup_force below. None (default) = pure
+        # equilibrium dynamics, identical to this class's original behavior.
+        self.sup_model = sup_model
+        # Simple same-object cache for rho_prev/v_prev (on the UNIFORM grid,
+        # matching sup_model's native convention) - this is a stateless ODE
+        # RHS called repeatedly by solve_ivp with arbitrary (possibly
+        # out-of-order, due to adaptive-step function evaluations) t, so
+        # "previous step" has no precise meaning here; same None->self
+        # fallback convention as force_factory.py's own rho_prev_grid=None
+        # case - only used if sup_model.use_rho_prev/use_v_prev/use_accel.
+        self._prev_rho_uniform = None
+        self._prev_v_uniform = None
 
     def get_alpha(self, t, t_range):
         """
@@ -264,6 +291,78 @@ class DDFT_Inertia_1D_Neural(DDFT_Inertia_1D):
         dFdrho_fourier = spline_to_fourier(self.y)
 
         return dFdrho_uniform, dFdrho_fourier
+
+    def _cheb_to_uniform(self, field_cheb):
+        """Periodic-spline interpolation from this solver's own Fourier grid
+        to the uniform MD grid - same convention as predict_dFdrho's step 1."""
+        y_padded = np.append(self.y, self.line.yMax)
+        field_padded = np.append(field_cheb, field_cheb[0])
+        spline = CubicSpline(y_padded, field_padded, bc_type='periodic')
+        return spline(self.uniform_r)
+
+    def predict_f_sup(self, rho_cheb, v_cheb, t=0.0):
+        """
+        Mirrors predict_dFdrho's interpolation pattern, but evaluates the
+        learned superadiabatic correction network (sup_model) instead of
+        the equilibrium free-energy model, directly in its default
+        (non-potential-output) force-field mode - same channel-building
+        convention as neural-ddft-pcm's force_factory.py:get_hybrid_force.
+        Returns f_sup interpolated back onto this solver's own Fourier grid.
+        """
+        rho_uniform = np.maximum(self._cheb_to_uniform(rho_cheb), 1e-6)
+        v_uniform = self._cheb_to_uniform(v_cheb)
+
+        rho_t = torch.tensor(rho_uniform).view(1, -1).float()
+        v_t = torch.tensor(v_uniform).view(1, -1).float()
+        grad_rho_t = (torch.roll(rho_t, -1, dims=-1) - torch.roll(rho_t, 1, dims=-1)) / (2 * self.dz)
+        grad_v_t = (torch.roll(v_t, -1, dims=-1) - torch.roll(v_t, 1, dims=-1)) / (2 * self.dz)
+
+        extra_kwargs = {}
+        if getattr(self.sup_model, "use_vext", False):
+            vext_uniform = self._cheb_to_uniform(self.Vext)  # self.Vext is 1D (N,), unlike rho/v's (N, nSpecies)
+            extra_kwargs["v_ext"] = torch.tensor(vext_uniform).view(1, -1).float()
+        needs_rho_prev = getattr(self.sup_model, "use_rho_prev", False)
+        needs_v_prev = getattr(self.sup_model, "use_v_prev", False)
+        needs_accel = getattr(self.sup_model, "use_accel", False)
+        if needs_rho_prev or needs_accel:
+            prev = self._prev_rho_uniform if self._prev_rho_uniform is not None else rho_uniform
+            rho_prev_t = torch.tensor(prev).view(1, -1).float()
+            if needs_rho_prev:
+                extra_kwargs["rho_prev"] = rho_prev_t
+        if needs_v_prev or needs_accel:
+            prev = self._prev_v_uniform if self._prev_v_uniform is not None else v_uniform
+            v_prev_t = torch.tensor(prev).view(1, -1).float()
+            if needs_v_prev:
+                extra_kwargs["v_prev"] = v_prev_t
+        if needs_accel:
+            # No real dt available in this stateless RHS callback (solve_ivp
+            # calls it at arbitrary adaptive substeps) - fall back to the
+            # outer integration's nominal dt, matching force_factory.py's
+            # own "accel requires dt" requirement as closely as this
+            # solver's calling convention allows.
+            dt_for_accel = getattr(self, "_accel_dt_hint", 1e-4)
+            extra_kwargs["accel"] = (v_t - v_prev_t) / dt_for_accel
+        if getattr(self.sup_model, "use_gamma", False):
+            extra_kwargs["gamma"] = torch.full_like(rho_t, float(self.gamma[0]))
+        if getattr(self.sup_model, "use_eta", False):
+            extra_kwargs["eta"] = torch.full_like(rho_t, float(self.eta))
+
+        with torch.no_grad():
+            f_sup_uniform = self.sup_model(rho_t, v_t, grad_rho_t, grad_v_t, **extra_kwargs).squeeze(0).numpy()
+
+        self._prev_rho_uniform, self._prev_v_uniform = rho_uniform, v_uniform
+
+        r_padded = np.concatenate(([self.uniform_r[-1] - self.line.L], self.uniform_r, [self.uniform_r[0] + self.line.L]))
+        f_sup_padded = np.concatenate(([f_sup_uniform[-1]], f_sup_uniform, [f_sup_uniform[0]]))
+        r_unique, unique_idx = np.unique(r_padded, return_index=True)
+        spline_to_fourier = CubicSpline(r_unique, f_sup_padded[unique_idx])
+        return spline_to_fourier(self.y)
+
+    def get_sup_force(self, rho, v, t=0.0):
+        if self.sup_model is None:
+            return 0.0
+        f_sup_fourier = self.predict_f_sup(rho[:, 0], v[:, 0], t)
+        return f_sup_fourier[:, None]
 
     def get_chemical_potential(self, x, rho, t=0.0):
         # Call our new helper method!

@@ -14,6 +14,7 @@ from goddard_psm.ddft_solver import DDFT_Inertia_1D_Neural
 from scipy.interpolate import interp1d
 
 from neural_ddft.models.neural_free_energy import NeuralFreeEnergyFine, NeuralFreeEnergy
+from neural_ddft.models.model import SuperadiabaticNet
 from neural_ddft.utils.functions import plot_movie
 from neural_ddft.utils.config import load_config, get_next_result_path, save_config
 
@@ -29,7 +30,19 @@ PARAM_SCHEME = {
     "gamma": (float, 2.0),
     "eta": (float, 0.01),
     "N": (int, 100),  # Number of spectral (Chebyshev/Fourier) grid points
-    #"dt": (float, 1e-4),
+    "dt": (float, 1e-4),
+    # Optional learned superadiabatic correction (hybrid mode) - checkpoint
+    # path relative to neural-ddft-pcm/ddft/, plus the architecture flags it
+    # was trained with (must match exactly, same requirement as
+    # neural-ddft-pcm's own checkpoint-consistency check).
+    "sup_model": (str, None),
+    "sup_use_grad": (bool, True),
+    "sup_use_vext": (bool, False),
+    "sup_use_rho_prev": (bool, False),
+    "sup_use_v_prev": (bool, False),
+    "sup_use_accel": (bool, False),
+    "sup_use_gamma": (bool, False),
+    "sup_use_eta": (bool, False),
 }
 
 args = load_config(PARAM_SCHEME, description="Modular Neural DDFT with spectral solver (PSM)")
@@ -77,6 +90,19 @@ if(args['base_model'] is not None):
 
 model.eval()
 
+sup_model = None
+if args['sup_model']:
+    sup_model = SuperadiabaticNet(
+        channels=16, use_grad=args['sup_use_grad'], use_vext=args['sup_use_vext'],
+        use_rho_prev=args['sup_use_rho_prev'], use_v_prev=args['sup_use_v_prev'],
+        use_accel=args['sup_use_accel'], use_gamma=args['sup_use_gamma'], use_eta=args['sup_use_eta'],
+    )
+    sup_ckpt = torch.load(f"../neural-ddft-pcm/ddft/{args['sup_model']}", map_location=torch.device('cpu'))
+    sup_state_dict = sup_ckpt['state_dict'] if isinstance(sup_ckpt, dict) and 'state_dict' in sup_ckpt else sup_ckpt
+    sup_model.load_state_dict(sup_state_dict)
+    sup_model.eval()
+    print(f"Loaded hybrid correction network from {args['sup_model']}")
+
 # Assuming you loaded init_rho, V, r, and the model as in your script
 
 optsPhys = {
@@ -94,7 +120,7 @@ optsNum = {
 }
 
 # 1. Initialize solver with ZERO potential (Ideal Gas Bulk)
-solver = DDFT_Inertia_1D_Neural(optsPhys, optsNum, model, r)
+solver = DDFT_Inertia_1D_Neural(optsPhys, optsNum, model, r, sup_model=sup_model)
 solver.Vext = np.zeros(solver.N)
 solver.Vext_grad = np.zeros(solver.N)
 
