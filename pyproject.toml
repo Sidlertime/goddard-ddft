@@ -10,7 +10,9 @@ dependencies = [
     "numpy",
     "scipy",
     "torch",
-    "tqdm"
+    "tqdm",
+    "h5py",
+    "matplotlib",
 ]
 
 [tool.setuptools.packages.find]
